@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Dank Shroom Control 1.0</title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.10.2/jquery.min.js"></script>
+        <script src="status.js"></script>
+    </head>
+    <body>
+        <h1>Shroom Status:</h1>
+        <table style="width: 208px;" border="1">
+            <tbody>
+                <tr>
+                    <td style="width: 60px;">Temperature</td><td style="width: 118px;" >Humidity</td>
+                </tr>
+                <tr>
+                    <td class="temp-value" style="width: 60px;"></td><td class="humid-value" style="width: 118px;"></td>
+                </tr>
+        </tbody>
+        </table>
+            <p>
+                <label>Target Temperature&nbsp;</label>
+                <input class="temp-target" name="temp" type="number" style="text-align:right;" />C
+            </p>
+            <p>
+                <label>Target Humidity&nbsp;</label>
+                <input class="humid-target" name="hum" type="number" style="text-align:right;" />%
+            </p>
+            <p> 
+                <input class="submit-target" type="button" value="Submit" onclick="submitTarget();" />
+            </p>
+        <p>
+            <textarea class="status-box" readonly rows="10" style="width:100%"></textarea>
+        </p>
+    </body>
+</html>
+    

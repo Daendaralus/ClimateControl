@@ -30,3 +30,10 @@
 *.exe
 *.out
 *.app
+*.code-workspace
+espShroomcontrol/.travis.yml
+espShroomcontrol/platformio.ini
+espShroomcontrol/.vscode/
+mspMainframe/platformio.ini
+mspMainframe/.vscode/
+mspMainframe/.travis.yml
