@@ -7,15 +7,16 @@
 #include <FS.h>
 #include <ArduinoOTA.h>
 #include <ArduinoJson.h>
-#include <LoopbackStream.h>
-#include "wifi.h" //Contains my password and ssid so is not on the repository :)
+#include "ringstream.h"
+#include "wifipw.h" //Contains my password and ssid so is not on the repository :)
+#include <time.h>
 #define BUFFERSIZE 0xFFF
 //const char* ssid = "";
 //const char* password = "";
 //const char* otapw = "";
 ESP8266WebServer server(80);
-LoopbackStream stream(BUFFERSIZE);
-LoopbackStream stream2(BUFFERSIZE);
+LoopbackStream stream(BUFFERSIZE); //Serial outgoing
+LoopbackStream stream2(BUFFERSIZE); //Serial incoming + prints
 const int led = LED_BUILTIN;
 
 float lastHum = -1;
@@ -23,7 +24,50 @@ float lastTemp = -1;
 float targetHum = -1;
 float targetTemp = -1;
 
+unsigned long delayStart = 0; // the time the delay started
+bool delayRunning = false; // true if still waiting for delay to finish
+bool blinking = false;
 void OTASetup();
+
+enum Command{
+    NONE = 1,
+    STATUS_RETURN,
+    SET_TARGET_TEMP,
+    SET_TARGET_HUM,
+    GET_TEMP,
+    GET_HUM,
+    START_FLASH_LED,
+    STOP_FLASH_LED
+};
+
+enum StatusReturns
+{
+    SUCCESS = 1,
+    FAILURE
+};
+
+template<typename ... Args>
+String string_format( const String& format, Args ... args )
+{
+    size_t size = snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
+    char* buf =  new char[ size ] ; 
+    snprintf( buf, size, format.c_str(), args ... );
+    String out = String( buf );
+    free(buf);
+    return out; // We don't want the '\0' inside
+}
+
+time_t getLocalTime()
+{
+  return (time_t)time(nullptr) - 7*3600;;
+}
+
+String getFormattedLocalTime()
+{
+  auto now = getLocalTime();
+  tm split = *localtime(&now);
+  return String(string_format("%d-%02d-%02d %02d:%02d:%02d", split.tm_year+1900, split.tm_mon+1, split.tm_mday, split.tm_hour, split.tm_min, split.tm_sec));
+}
 
 //TODO:
 //REST CLIENT
@@ -38,38 +82,67 @@ void console_send() {
         while( i< chars){
           auto c = stream.read();
           stream2.write(c);
-         Serial.write(c);  
-         delay(0); 
-         i++;
+          Serial.write(c);  
+          delay(0); 
+          i++;
     }
   }
 }
+
+void startMessageLine()
+{
+  stream2.print(getFormattedLocalTime()+": ");
+}
+template <class T>
+void StatusPrintln(T&& line)
+{
+  startMessageLine();
+  stream2.println(line);
+}
+
+void startCommand(Command cmd, int argcount)
+{
+  stream.print("$");stream.print((char)cmd); stream.print((char)argcount+1);
+}
+
+void writeArgument(const String&& value)
+{
+  stream.print("&"); stream.print(value);
+}
+
+void endCommand()
+{
+  stream.println("~");
+}
+
 
 void bufferSerial() {
   long chars;
   if ((chars = Serial.available())) {
     long i = 0;
+    if(stream2.lastWritten() == '\n')//Check for last character in stream2 being \n
+    {
+      startMessageLine();
+    }
     while ( i < chars) {
-      stream2.write(Serial.read());  
+      char c = Serial.read();
+      stream2.write(c);
+
+      if(c=='\n' && i< (chars-1))
+      {
+        startMessageLine();
+      }
       delay(0); 
       i++;
     }
   } 
 }
 
-template<typename ... Args>
-String string_format( const String& format, Args ... args )
-{
-    size_t size = snprintf( nullptr, 0, format.c_str(), args ... ) + 1; // Extra space for '\0'
-    char* buf =  new char[ size ] ; 
-    snprintf( buf, size, format.c_str(), args ... );
-    String out = String( buf );
-    free(buf);
-    return out; // We don't want the '\0' inside
-}
+
 
 String readFile(String path) { // send the right file to the client (if it exists)
-  stream2.println("handleFileRead: " + path);
+  startMessageLine();
+  stream2.print("handleFileRead: " + path);
   //if (path.endsWith("/")) path += "index.html";         // If a folder is requested, send the index file
   String contentType = "text/html";            // Get the MIME type
   if (SPIFFS.exists(path)) {                            // If the file exists
@@ -99,7 +172,8 @@ String getContentType(String filename){
   return "text/plain";
 }
 bool handleFileRead(String path){  // send the right file to the client (if it exists)
-  stream2.println("handleFileRead: " + path);
+  startMessageLine();
+  stream2.print("handleFileRead: " + path);
   if(path.endsWith("/")) path += "status.html";           // If a folder is requested, send the index file
   String contentType = getContentType(path);             // Get the MIME type
   if(SPIFFS.exists(path)){  // If the file exists, either as a compressed archive, or normal                                       // Use the compressed version
@@ -115,13 +189,13 @@ bool handleFileRead(String path){  // send the right file to the client (if it e
 
 bool writeFile(String text, String path)
 {
-  stream2.println("Trying to write file...");
-  unsigned int bufsize= text.length()*sizeof(char);
-  stream2.println(string_format("file size is: %i", bufsize));
+  StatusPrintln("Trying to write file...");
+  int bufsize= text.length()*sizeof(char);
+  StatusPrintln(string_format("file size is: %i", bufsize)); 
   FSInfo info;
   SPIFFS.info(info);
   unsigned int freebytes = info.totalBytes-info.usedBytes;
-  stream2.println(string_format("free bytes on flash: %i", freebytes));
+  StatusPrintln(string_format("free bytes on flash: %i", freebytes)); 
   return true;
 }
 
@@ -194,17 +268,16 @@ void handleNotFound(){
 
 void handleStatusData()
 {
-  StaticJsonBuffer<200> jsonBuffer; //TODO SOMETHING + STATUS BUFFER SIZE
+  StaticJsonBuffer<0x1FF> jsonBuffer; //TODO SOMETHING + STATUS BUFFER SIZE
   JsonObject& jsonObj = jsonBuffer.createObject();
-  char JSONmessageBuffer[200];
+  char JSONmessageBuffer[0x1FF];
   jsonObj["tval"] = lastTemp;
   jsonObj["hval"] = lastHum;
   jsonObj["ttarget"] = targetTemp;
   jsonObj["htarget"] = targetHum;
-  jsonObj["status"] = stream.available()? stream.readString() : "";
+  jsonObj["status"] = stream2.available()?stream2.readString():""; //TODO move time thing to read buffers part on condition of encountering a \n :)
   jsonObj.prettyPrintTo(JSONmessageBuffer, sizeof(JSONmessageBuffer));
   server.send(200, "application/json", JSONmessageBuffer);
-  
 }
 
 void handleUpdateTarget()
@@ -212,38 +285,70 @@ void handleUpdateTarget()
   int c = server.args();
   for(int i =0; i<c;++i)
   {
-    stream2.println(string_format("Arg %i: %s", i, server.arg(i).c_str()));
+    StatusPrintln(string_format("Arg %i: %s", i, server.arg(i).c_str())); 
   }
+  StatusPrintln("Target update successful."); 
+  stream.print("$");stream.print((char)5); stream.print((char)1);stream.println("~");
+  //stream.println(string_format("$%c%c&%c~", (char)START_FLASH_LED, (char)1, char(95)));
+  blinking = ! blinking;
   server.send(202);
+}
+
+void handleSerialInput()
+{
+  bool nextcharisnumber=false;
+  if(server.args() > 0&& server.hasArg("input"))
+  {
+    for(auto c : server.arg("input"))
+    {
+      if(c=='\\')
+        nextcharisnumber=true;
+      else
+      {
+        nextcharisnumber?stream.print((char)String(c).toInt()):stream.print(c);
+        nextcharisnumber=false;
+      }
+    }
+    //stream.println("");
+  }
+  server.send(200);
 }
 
 void addRESTSources()
 {
   server.on("/get/status", HTTP_GET, handleStatusData);
   server.on("/update/target", HTTP_PUT, handleUpdateTarget);
+  server.on("/update/serialinput", HTTP_PUT, handleSerialInput);
+  
+  
 }
 
 void setup(void){
+  stream.clear();
+  stream2.clear();
   pinMode(led, OUTPUT);
   digitalWrite(led, 0);
-  Serial.begin(115200);
+  Serial.begin(9600);
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
   stream2.println("");
 
+  startMessageLine();
   // Wait for connection
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     stream2.print(".");
   }
   stream2.println("");
+  startMessageLine();
   stream2.print("Connected to ");
-  stream2.println(ssid);
+  stream2.println(ssid); 
+  startMessageLine();
   stream2.print("IP address: ");
-  stream2.println(WiFi.localIP());
+  stream2.println(WiFi.localIP()); 
 
   if (MDNS.begin("shrooms")) {
-    stream2.println("MDNS responder started");
+    StatusPrintln("MDNS responder started"); 
   }
 
   server.on("/submit", HTTP_POST, handleSubmit);
@@ -263,15 +368,36 @@ void setup(void){
   OTASetup();
   SPIFFS.begin();
   server.begin();
-  stream2.println("HTTP server started");
+  StatusPrintln("HTTP server started");
+  startMessageLine();
+  stream2.print("free heap=");
+  stream2.println(ESP.getFreeHeap());
+  startMessageLine();
+  stream2.print("free sketch space=");
+  stream2.println(ESP.getFreeSketchSpace());
+delayStart = millis();   // start delay
+  delayRunning = true; // not finished yet
+  configTime(10*3600, 0, "pool.ntp.org", "time.nist.gov");
+  StatusPrintln("Waiting for time");
+  startMessageLine();
+  while (!time(nullptr)) {
+    stream2.print(".");
+    delay(1000);
+  }
 }
 
 void loop(void){
   bufferSerial();
-  server.handleClient();
+
   ArduinoOTA.handle();
-  console_send();
-}
+// if (delayRunning && ((millis() - delayStart) >= 2000)) {
+//      stream2.print(stream2.available());
+//   stream2.print(" | ");
+//   stream2.println(stream2.pos);
+//   delayStart = millis();
+//   }
+    server.handleClient();
+  console_send();}
 
 void OTASetup()
 {
@@ -289,13 +415,13 @@ void OTASetup()
   });
   ArduinoOTA.onError([](ota_error_t error) {
     stream2.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    if (error == OTA_AUTH_ERROR) stream2.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) stream2.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) stream2.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) stream2.println("Receive Failed");
+    else if (error == OTA_END_ERROR) stream2.println("End Failed");
   });
   ArduinoOTA.begin();
-  stream2.println("OTA ready");
+  stream2.println("OTA ready"); 
 
 }

@@ -38,3 +38,4 @@ espShroomcontrol/.vscode/
 mspMainframe/platformio.ini
 mspMainframe/.vscode/
 mspMainframe/.travis.yml
+espShroomcontrol/include/wifipw.h

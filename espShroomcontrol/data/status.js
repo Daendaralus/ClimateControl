@@ -1,6 +1,6 @@
 var tt =0;
 var th = 0;
-
+var init = false;
 function updateStatus() {
     $.ajax({
       method: "GET",
@@ -10,18 +10,27 @@ function updateStatus() {
         $('.humid-value').empty().append(data.hval);
         tt=data.ttarget;
         th = data.htarget;
+        if(!init)
+        {
+          $('.temp-target').val(tt);
+          $('.humid-target').val(th);
+          init=true;
+        }
         $('.status-box').append(data.status);
         $('.status-box').scrollTop(99999);
+      },
+      complete: function(obj, status){
+        setTimeout(updateStatus, 1000); 
       }
     });
-    setTimeout(updateStatus, 2000); // you could choose not to continue on failure...
+    // you could choose not to continue on failure...
 }
   
 function submitTarget()
 {
   var tobj = new Object();
-  tobj.thum = $('.humid-target').val;
-  tobj.ttemp = $('.temp-target').val;
+  tobj.thum = $('.humid-target').val();
+  tobj.ttemp = $('.temp-target').val();
   $.ajax({
     method: "PUT",
     url: window.location.origin+"/update/target",
@@ -33,9 +42,24 @@ function submitTarget()
   });
 }
 
+function handleEnter(e)
+{
+  var keycode = (e.keyCode ? e.keyCode : e.which);
+    if (keycode == '13') {
+        var tobj = new Object();
+        tobj.input = $('.serial-input').val();
+        $.ajax({
+          method: "PUT",
+          url: window.location.origin+"/update/serialinput",
+          data: tobj,
+          success: function(data){
+            $('.serial-input').val("");
+          }
+        });
+    }
+}
+
 $(document).ready(function() {
     $('.submit-target').onclick = submitTarget;
     updateStatus();
-    $('.temp-target').val(tt);
-    $('.humid-target').val(th);
 });
